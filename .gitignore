@@ -30,3 +30,7 @@ playwright/.cache/
 *.njsproj
 *.sln
 *.sw?
+
+# Local deployment metadata and private environment overrides
+.vercel/
+!.env.vercel.example
