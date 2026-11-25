@@ -1,11 +1,8 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { api, ApiError, type PaymentIntent, type SessionUser } from './api'
-import App from './App'
-import { ErrorBoundary } from './components/ErrorBoundary'
-import { ContentProvider } from './content'
-import paybridgeModel from '../public/paybridge-model.json'
+import { api, ApiError } from './api'
+import { mockWorkspace, renderApp, renderLoggedIn } from './test/appHarness'
 import {
   auditorUser,
   merchantUser,
@@ -14,49 +11,6 @@ import {
   paymentIntent,
   reconciliation,
 } from './test/fixtures'
-
-function mockWorkspace(payments: PaymentIntent[] = [paymentIntent()], overviewData = overview) {
-  return {
-    overview: vi.spyOn(api, 'overview').mockResolvedValue(overviewData),
-    payments: vi.spyOn(api, 'payments').mockResolvedValue({ paymentIntents: payments }),
-    webhooks: vi.spyOn(api, 'webhooks').mockResolvedValue({ webhookEvents: [] }),
-    reconciliations: vi.spyOn(api, 'reconciliations').mockResolvedValue({ reconciliations: [] }),
-    auditEvents: vi.spyOn(api, 'auditEvents').mockResolvedValue({ auditEvents: [] }),
-  }
-}
-
-function renderApp() {
-  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(
-    new Response(JSON.stringify(paybridgeModel), { status: 200 }),
-  ))
-  return render(
-    <ContentProvider appId="paybridge" modelUrl="/paybridge-model.json">
-      <ErrorBoundary>
-        <App />
-      </ErrorBoundary>
-    </ContentProvider>,
-  )
-}
-
-function renderLoggedIn(
-  user: SessionUser = merchantUser,
-  payments: PaymentIntent[] = [paymentIntent()],
-  overviewData = overview,
-) {
-  vi.spyOn(api, 'csrf').mockResolvedValue(undefined)
-  vi.spyOn(api, 'currentUser').mockResolvedValue({ user, localProfileSession: true })
-  vi.spyOn(api, 'profiles').mockResolvedValue({
-    accounts: [
-      { id: 'merchant-northstar', displayName: 'Alex Morgan', role: 'MERCHANT' },
-      { id: 'merchant-cedar', displayName: 'Casey Rivera', role: 'MERCHANT' },
-      { id: 'operator', displayName: 'Morgan Patel', role: 'OPERATOR' },
-      { id: 'auditor', displayName: 'Sam Rivera', role: 'AUDITOR' },
-    ],
-  })
-  const mocks = mockWorkspace(payments, overviewData)
-  const view = renderApp()
-  return { ...view, mocks }
-}
 
 afterEach(() => {
   cleanup()

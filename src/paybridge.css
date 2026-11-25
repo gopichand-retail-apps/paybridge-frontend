@@ -920,6 +920,9 @@ h4 {
 }
 
 .table-scroll {
+  /* Containing block for absolutely positioned .sr-only labels in cells; without it they escape this
+     scroller's clip and widen the whole page (PB-04: 707px at a 320px viewport). */
+  position: relative;
   width: 100%;
   overflow-x: auto;
   overscroll-behavior-x: contain;
@@ -1640,6 +1643,127 @@ h4 {
   width: 100%;
 }
 
+/* The global `p` rule uses the serif reading face; drawer copy stays in the interface face. */
+.awaiting-note p,
+.refund-history-empty,
+.refund-history-error p,
+.refund-row-reason,
+.refund-row-meta {
+  font-family: 'Roboto Variable', Roboto, sans-serif;
+}
+
+/* PB-01: a write whose outcome is not yet known. */
+.awaiting-note {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 11px 13px;
+  background: var(--signal-amber-pale);
+  border: 1px solid var(--signal-amber);
+  border-radius: 5px;
+}
+
+.awaiting-note strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.awaiting-note p {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.awaiting-note .secondary-button {
+  justify-self: start;
+}
+
+/* PB-02: refund history. */
+.refund-history .section-title-row {
+  flex-wrap: wrap;
+}
+
+.refund-remaining {
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.refund-history-empty {
+  margin: 0;
+  color: var(--muted-strong);
+  font-size: 12px;
+}
+
+.refund-history-error {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.refund-history-error p {
+  margin: 0;
+}
+
+.refund-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.refund-row {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  background: #f7f9f6;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+}
+
+.refund-row-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 2px 12px;
+}
+
+.refund-row-head strong {
+  font-size: 12px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.refund-row-head span {
+  font-size: 12px;
+  font-weight: 650;
+  font-variant-numeric: tabular-nums;
+}
+
+.refund-row-reason {
+  margin: 0;
+  color: var(--ink);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.refund-row-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 2px 12px;
+  margin: 0;
+  color: var(--muted-strong);
+  font-size: 11px;
+}
+
 .permission-note,
 .working-note {
   display: flex;
@@ -2143,16 +2267,26 @@ h4 {
   }
 
   .topbar {
+    flex-wrap: wrap;
+    gap: 4px 8px;
     min-height: 52px;
-    padding: 0 14px;
+    padding: 6px 14px;
   }
 
   .breadcrumb {
+    min-width: 0;
     gap: 6px;
     font-size: 10px;
   }
 
+  .breadcrumb strong {
+    overflow-wrap: anywhere;
+  }
+
   .topbar-right {
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    min-width: 0;
     gap: 7px;
   }
 

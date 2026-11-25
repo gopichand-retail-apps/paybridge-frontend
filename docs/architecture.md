@@ -86,6 +86,8 @@ The browser must not grant roles or confirm prices, balances, payments, stock, o
 | [src/content-schema.ts](../src/content-schema.ts)                                                              | Runtime boundary validation                                        |
 | [src/App.tsx](../src/App.tsx)<br>[src/components/NewPaymentDialog.tsx](../src/components/NewPaymentDialog.tsx) | Screens, composition, and interaction owners; see screen inventory |
 | [src/domain/money.ts](../src/domain/money.ts)<br>[src/hooks/useDialogFocus.ts](../src/hooks/useDialogFocus.ts) | Client hooks, presentation state, and domain adapters              |
+| [src/domain/intentKeys.ts](../src/domain/intentKeys.ts)<br>[src/hooks/useIntentAttempts.ts](../src/hooks/useIntentAttempts.ts) | Stable intent key store and the awaiting-confirmation lifecycle (PB-01) |
+| [src/hooks/useRefundHistory.ts](../src/hooks/useRefundHistory.ts)<br>[src/components/RefundHistoryList.tsx](../src/components/RefundHistoryList.tsx)<br>[src/components/AwaitingConfirmation.tsx](../src/components/AwaitingConfirmation.tsx) | Server refund history and the unconfirmed-write notice (PB-02) |
 | [src/App.css](../src/App.css)<br>[src/index.css](../src/index.css)                                             | Authored styling and adaptation rules                              |
 | [public/paybridge-model.json](../public/paybridge-model.json)                                                  | Active public content/locale contract; no private credentials      |
 | [e2e](../e2e)                                                                                                  | Existing test/support directory; configured does not mean rerun    |
@@ -131,7 +133,13 @@ The API records a declined attempt and leaves the intent in `DECLINED`. Capture 
 
 **Actor and precondition:** An operator is signed in and the intent is within the operator's allowed portfolio scope.
 
-The operator can void an authorized intent or record a refund up to the captured, unrefunded amount. Each command requires an idempotency key, is checked against the state machine, and creates an audit record. Refunds update the internal ledger only; no external funds are moved.
+The operator can void an authorized intent or record a refund up to the captured, unrefunded amount. Each command requires an idempotency key, is checked against the state machine, and creates an audit record. Refunds update the internal ledger only; no external funds are moved. A captured payment shows its refund history from the API (PB-02): reference, amount with currency, reason, who recorded it, when, and the refundable balance left after it. Refunds recorded before the API stored an actor show "Actor not recorded" and no balance rather than invented values.
+
+#### Merchant or operator retries a write whose reply was lost (PB-01)
+
+**Actor and precondition:** A signed-in merchant or operator confirms authorize, capture, void, reconcile or a refund, and the request may or may not have reached the server (network failure, abort, timeout, a 5xx reply or an unreadable reply).
+
+The client creates one `Idempotency-Key` when the user confirms the action and keeps it in memory only (decision D-11: nothing in browser storage). It shows **Awaiting confirmation** and never reports success before the server confirms. **Retry safely** (or the ordinary action button) re-sends on the same key with a new `X-Request-ID`; the API replays the original result or rejects it, so the write cannot be applied twice. A 4xx reply is a definite answer: the key is discarded, the error is shown, and a 409 reloads the payment so the drawer shows what the server holds. The key is also discarded after a confirmed result and on sign-out, and a changed payload (a different refund amount or reason) gets a new key. While a refund is unconfirmed its form is disabled, so a second, different refund cannot be started by accident. The notice survives closing and reopening the drawer.
 
 #### Auditor inspects payment history
 
@@ -200,7 +208,7 @@ Requests must use the implemented routes and validation; The API and event contr
 
 ## 8. Security, privacy, and egress
 
-Current release limitation: **No processor is contacted and no funds move. The additional responsive check fails with horizontal overflow; formatting, durable webhook secrets, identity, and hosting still need work.**
+Current release limitation: **No processor is contacted and no funds move. Formatting, durable webhook secrets, identity, and hosting still need work. The additional responsive check that failed at baseline passed on 2026-11-24 after PB-04.**
 
 Only the local simulator controls in the current source are implemented. CORS, a role label, and mode selection do not provide a new production identity boundary.
 
@@ -208,7 +216,7 @@ Keep private credentials out of public models, browser bundles, logs, URLs, and 
 
 ## 9. Design, accessibility, and platform adapters
 
-The existing product styling is authored in [src/App.css](../src/App.css), [src/index.css](../src/index.css), [src/paybridge.css](../src/paybridge.css). Preserve its tokens, layout density, fonts/assets, breakpoints, and component states. User-facing strings/locale rules follow the active validated model. WCAG 2.2 AA is a target, not a verified conformance claim: keyboard/focus/dialog behavior, zoom/reflow, contrast, reduced motion, and screen readers require their applicable checks. No redesign or new visual measurements were performed here. Native/mobile packaging and device adapters are **not implemented by this web repository**.
+The existing product styling is authored in [src/App.css](../src/App.css), [src/index.css](../src/index.css), [src/paybridge.css](../src/paybridge.css). Preserve its tokens, layout density, fonts/assets, breakpoints, and component states. User-facing strings/locale rules follow the active validated model. WCAG 2.2 AA is a target, not a verified conformance claim: keyboard/focus/dialog behavior, zoom/reflow, contrast, reduced motion, and screen readers require their applicable checks. PB-04 (2026-11-24) fixed two causes of horizontal page overflow without changing the design: absolutely positioned screen-reader labels in table headers escaped their `overflow-x: auto` wrapper because it was not a containing block (`.table-scroll` is now `position: relative`; this was the recorded 707px at a 320px viewport), and the top bar did not fit at 320px on pages with a longer title, so it now wraps. The unconfirmed-write notice is a polite live region and the refund list is a labelled ordered list. No redesign or new visual measurements were performed here. Native/mobile packaging and device adapters are **not implemented by this web repository**.
 
 ## 10. Build, checks, and deployment
 
@@ -239,6 +247,7 @@ CI configuration is listed in section 3. Run the configured checks before mergin
 - **Ports/adapters for simulated processing:** authorization delegates to a deterministic local simulator. No PAN/CVV, external processor credentials, live payment call, or real funds are part of the adapter.
 - **State machine and money invariants:** only permitted transitions are accepted; captured/refunded totals remain bounded; all money uses integer minor units and USD.
 - **Idempotent commands:** create/authorize/capture/void/refund/reconcile bind keys to request hashes. Same-payload retries return prior results; conflicting key reuse does not repeat the operation.
+- **Stable intent key (PB-01):** `useIntentAttempts` owns one in-memory key per payment and action. It is reused on every retry after an unknown outcome, replaced when the payload changes, and discarded after a resolved attempt or sign-out. `isOutcomeUnknown` treats a missing reply or a 5xx as unknown and any 4xx as definite.
 - **Transactional outbox and receiver dedupe:** capture/refund state and outbox records commit atomically; signed in-process delivery is verified and event IDs are deduplicated before reconciliation reads them.
 - **Authorization and audit:** the API derives role/principal from the server session, scopes merchants, rejects auditor mutations, and records allowlisted audit events. The UI is not an authorization boundary.
 
@@ -249,7 +258,10 @@ The two Git repositories remain separate. Each owns one maintained README and th
 | Capability                      | Acceptance                                                        | Owner/path                         | Current status                                                | Evidence                               | Risk                                                                                                                                                                                     |
 | ------------------------------- | ----------------------------------------------------------------- | ---------------------------------- | ------------------------------------------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Repository-local architecture   | Guide available in this checkout and linked from README           | docs/architecture.md; README.md    | Documented and validated                                      | File, link, and diagram checks         | Keep documentation consistent with source changes                                                                                                                                        |
-| UI composition and API boundary | Preserve existing workflows and failure states                    | src/api.ts and source map          | Implemented; application verification limits are listed below | Current source and existing app design | No processor is contacted and no funds move. The additional responsive check fails with horizontal overflow; formatting, durable webhook secrets, identity, and hosting still need work. |
+| UI composition and API boundary | Preserve existing workflows and failure states                    | src/api.ts and source map          | Implemented; application verification limits are listed below | Current source and existing app design | No processor is contacted and no funds move. Formatting, durable webhook secrets, identity, and hosting still need work. The additional responsive check that failed at baseline passed on 2026-11-24 after PB-04. |
+| PB-01 intent keys (UI)          | A lost reply is retried on the same key; a changed payload, a definite rejection and sign-out get a new key; no success shown before confirmation | src/domain/intentKeys.ts, src/hooks/useIntentAttempts.ts, src/App.tsx | Implemented 2026-11-24 | Unit tests and e2e/payment-keys.spec.ts against the real API | Keys are in memory only, so a reload loses a pending intent (decision D-11) |
+| PB-02 refund history (UI)       | Actor, reason, reference, currency, amount and remaining balance visible; a stale or rejected refund changes nothing and the balance reloads | RefundHistoryList, useRefundHistory | Implemented 2026-11-24 | Unit tests and e2e/payment-keys.spec.ts | Older refunds have no actor or balance |
+| PB-04 layout and keyboard       | No horizontal overflow at 320, 390, 620 and desktop widths; every payment action reachable by keyboard; the drawer returns focus to its opener | src/paybridge.css, e2e/responsive-keyboard.spec.ts | Implemented 2026-11-24 | Browser specs and the workspace acceptance adapter | Automated checks only; no screen-reader or real-device pass |
 | Public deployment               | Verified identity, data durability, recovery, and hosted behavior | Existing deployment/API boundaries | Needs separate hardening/verification                         | No new hosted evidence                 | Local checks do not establish production readiness                                                                                                                                       |
 
 ## 13. Dated verification and limitations
@@ -259,7 +271,17 @@ Last documentation review: **2026-11-09**. The checks below distinguish document
 - Repository-local guide, README link, source-path references, section/contents anchors, and Mermaid syntax: passed documentation validation.
 - New application tests/builds, coverage, dependency audits, browser/device accessibility/performance, hosted CI, and Vercel deployment: **not rerun for the documentation updates**.
 - Frontend production builds passed on 2026-11-09 with Node 24.15.0. Build success does not establish that all application quality gates pass.
-- Outstanding baseline limit: No processor is contacted and no funds move. The additional responsive check fails with horizontal overflow; formatting, durable webhook secrets, identity, and hosting still need work.
+- Outstanding baseline limit: No processor is contacted and no funds move. Formatting, durable webhook secrets, identity, and hosting still need work. The additional responsive check that failed at baseline passed on 2026-11-24 after PB-04.
+
+### Stage B slice PB-01, PB-02, PB-04 (2026-11-24)
+
+Branch `feature/pb-01-payment-intent-keys` from `main` at `4a8f345`, workspace Node 24.15.0, Chromium through Playwright, isolated ports 5603/5604 with an in-memory API.
+
+- `npm.cmd run lint`, `npm.cmd run typecheck`, `npm.cmd run build`: passed. `npm.cmd audit`: 0 vulnerabilities.
+- `node node_modules/vitest/vitest.mjs run --coverage --maxWorkers=2`: **118 tests passed** (72 at baseline); **96.12% statements, 92.72% branches, 93.30% functions, 97.17% lines**. Every new module is 100% line-covered; all changed lines in `App.tsx`, `api.ts` and the drawer are covered.
+- Browser: `node node_modules/@playwright/test/cli.js test` passed 8/8 with `PAYBRIDGE_E2E_MODE` unset (mock) and 8/8 with `PAYBRIDGE_E2E_MODE=false` (real-API setting on the same loopback API). The workspace acceptance adapter passed 3/3; at baseline it was 2 passed and 1 failed (718px at 620 and 390, 707px at 320).
+- The lost-reply specs let the request reach the API, then abort or replace the reply, so the write really commits; the retry reuses the same `Idempotency-Key` with a new `X-Request-ID`.
+- Screenshots at 1280 and 320 pixels were reviewed by eye for the new drawer states. Not run: screen readers, real devices, p75 web-vitals field data, hosted CI.
 
 The baseline results below record earlier validation. Re-run the listed commands against the current revision before release.
 

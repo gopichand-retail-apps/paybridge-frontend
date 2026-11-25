@@ -73,11 +73,11 @@ LCOV coverage in `coverage/`, and enforces 90% overall statements, branches, fun
 The API client, API-mode configuration, and money module also have per-file 95% floors in all four
 categories. Test files and `src/test/` helpers are excluded because they are not production code.
 
-The latest local coverage run passed 72 tests across 15 files with **95.72% statements, 92.13%
-branches, 91.71% functions, and 96.88% lines**. The aggregate and critical-file gates pass; no
+The latest local coverage run (2026-11-24) passed 118 tests across 21 files with **96.12% statements, 92.72%
+branches, 93.30% functions, and 97.17% lines**. The aggregate and critical-file gates pass; no
 production module is excluded from coverage.
 
-The isolated E2E harness passed **1/1 in mock mode and 1/1 in live-selection mode**. It uses
+The isolated E2E harness passed **8/8 in mock mode and 8/8 in live-selection mode**. The specs cover the payment workflow, lost-reply retries on a stable idempotency key, a stale refund rejected by the server, and layout/keyboard checks at 320, 390, 620 and desktop widths. It uses
 synthetic seed data in an in-memory H2 database and verifies the selected API origin; it does not
 connect to a production database. The current frontend GitHub Actions workflow does not run this
 cross-repository E2E test.
@@ -87,6 +87,8 @@ cross-repository E2E test.
 - Merchant workspace profile sign-in and merchant-scoped payment intent listing.
 - Payment intent creation, authorization, capture, webhook delivery, and reconciliation.
 - Operator void/refund/reconciliation actions and auditor read-only access.
+- Refund history on captured payments: reference, amount and currency, reason, who recorded it, when, and the refundable balance left after each refund.
+- Safe retries: one `Idempotency-Key` per confirmed action, kept in memory only. After a lost reply the drawer shows **Awaiting confirmation** and **Retry safely** re-sends on the same key, so the action cannot happen twice. The key is replaced when the payload changes and discarded after a confirmed result or on sign-out.
 - Payment history, webhook events, reconciliation results, and audit history.
 
 Payment amounts use integer minor units and all state transitions are enforced by the API. Local

@@ -48,6 +48,9 @@ import {
 } from "./components/PaymentDetailsDrawer";
 import { PaymentTable } from "./components/PaymentTable";
 import { formatMoney } from "./domain/money";
+import { isOutcomeUnknown } from "./domain/intentKeys";
+import { useIntentAttempts } from "./hooks/useIntentAttempts";
+import { useRefundHistory } from "./hooks/useRefundHistory";
 import { useContent } from "./content-context";
 import { loadWorkspaceProfiles } from "./profile-source";
 import {
@@ -102,6 +105,10 @@ async function fetchWorkspaceData(): Promise<WorkspaceData> {
   };
 }
 
+function isStateConflict(cause: unknown): boolean {
+  return cause instanceof ApiError && cause.status === 409;
+}
+
 function errorMessage(
   cause: unknown,
   model: ReturnType<typeof useContent>["model"],
@@ -137,6 +144,12 @@ function App() {
   const [pageError, setPageError] = useState("");
   const [drawerError, setDrawerError] = useState("");
   const [toast, setToast] = useState<Toast | null>(null);
+  const attempts = useIntentAttempts();
+  const refundHistory = useRefundHistory(
+    selectedPayment?.id ?? null,
+    selectedPayment?.refundedAmountMinor ?? 0,
+    (selectedPayment?.capturedAmountMinor ?? 0) > 0,
+  );
   const deferredSearch = useDeferredValue(search.trim());
   const canCreateIntent = user?.role === "MERCHANT";
   const userDisplayName = user
@@ -273,6 +286,7 @@ function App() {
   async function handleLogout(): Promise<void> {
     try {
       await api.logout();
+      attempts.reset();
       await api.csrf();
       setAccounts(await loadWorkspaceProfiles());
       setUser(null);
@@ -327,28 +341,38 @@ function App() {
     }
   }
 
-  async function handlePaymentAction(action: PaymentAction): Promise<void> {
-    if (!selectedPayment) return;
+  async function handlePaymentAction(action: PaymentAction): Promise<boolean> {
+    if (!selectedPayment) return false;
+    const paymentId = selectedPayment.id;
     setBusyAction(action);
     setDrawerError("");
     try {
-      const idempotencyKey = crypto.randomUUID();
-      if (action === "authorize") {
-        await api.authorize(selectedPayment.id, idempotencyKey);
-      } else if (action === "capture") {
-        await api.capture(selectedPayment.id, idempotencyKey);
-      } else if (action === "void") {
-        await api.void(selectedPayment.id, idempotencyKey);
-      } else if (action === "deliver") {
-        await api.deliverWebhooks(selectedPayment.id);
+      if (action === "deliver") {
+        await api.deliverWebhooks(paymentId);
       } else {
-        await api.reconcile(selectedPayment.id, idempotencyKey);
+        await attempts.run(
+          {
+            scope: `${paymentId}:${action}`,
+            fingerprint: paymentId,
+            awaiting: { paymentId, action },
+          },
+          (key) => sendKeyedAction(action, paymentId, key),
+        );
       }
+    } catch (cause) {
+      // An unknown outcome is shown as "awaiting confirmation"; anything else is a definite answer.
+      if (action === "deliver" || !isOutcomeUnknown(cause)) {
+        setDrawerError(errorMessage(cause, model, t));
+      }
+      if (isStateConflict(cause)) await resyncPayment(paymentId);
+      setBusyAction(null);
+      return false;
+    }
 
+    try {
       const data = await refreshWorkspace();
       setSelectedPayment(
-        data.payments.find((payment) => payment.id === selectedPayment.id) ??
-          null,
+        data.payments.find((payment) => payment.id === paymentId) ?? null,
       );
       setToast({ message: t(`app.action.${action}`), kind: "success" });
     } catch (cause) {
@@ -356,26 +380,79 @@ function App() {
     } finally {
       setBusyAction(null);
     }
+    return true;
   }
 
+  /** After the server says the payment changed under us, show what the server now holds. */
+  async function resyncPayment(paymentId: string): Promise<void> {
+    try {
+      const data = await refreshWorkspace();
+      setSelectedPayment(
+        data.payments.find((payment) => payment.id === paymentId) ?? null,
+      );
+    } catch (cause) {
+      setPageError(errorMessage(cause, model, t));
+    }
+  }
+
+  async function sendKeyedAction(
+    action: Exclude<PaymentAction, "deliver">,
+    paymentId: string,
+    key: string,
+  ): Promise<void> {
+    if (action === "authorize") await api.authorize(paymentId, key);
+    else if (action === "capture") await api.capture(paymentId, key);
+    else if (action === "void") await api.void(paymentId, key);
+    else await api.reconcile(paymentId, key);
+  }
+
+  /** Resolves true once the server confirmed the refund, false while its outcome is still unknown. */
   async function handleRefund(
     amountMinor: number,
     reason: string,
-    idempotencyKey: string,
-  ): Promise<void> {
-    if (!selectedPayment) return;
+  ): Promise<boolean> {
+    if (!selectedPayment) return false;
+    const paymentId = selectedPayment.id;
     setBusyAction("refund");
     setDrawerError("");
     try {
-      await api.refund(selectedPayment.id, amountMinor, reason, idempotencyKey);
+      await attempts.run(
+        {
+          scope: `${paymentId}:refund`,
+          fingerprint: `${amountMinor}|${reason}`,
+          awaiting: { paymentId, action: "refund", amountMinor, reason },
+        },
+        (key) => api.refund(paymentId, amountMinor, reason, key),
+      );
+    } catch (cause) {
+      if (isStateConflict(cause)) await resyncPayment(paymentId);
+      setBusyAction(null);
+      if (isOutcomeUnknown(cause)) return false;
+      throw cause;
+    }
+    try {
       const data = await refreshWorkspace();
       setSelectedPayment(
-        data.payments.find((payment) => payment.id === selectedPayment.id) ??
-          null,
+        data.payments.find((payment) => payment.id === paymentId) ?? null,
       );
       setToast({ message: t("app.refundRecorded"), kind: "success" });
     } finally {
       setBusyAction(null);
+    }
+    return true;
+  }
+
+  async function handleRetryAwaiting(): Promise<boolean> {
+    const pending = selectedPayment
+      ? attempts.awaitingFor(selectedPayment.id)
+      : null;
+    if (!pending) return false;
+    if (pending.action !== "refund") return handlePaymentAction(pending.action);
+    try {
+      return await handleRefund(pending.amountMinor, pending.reason);
+    } catch (cause) {
+      setDrawerError(errorMessage(cause, model, t));
+      return false;
     }
   }
 
@@ -662,17 +739,23 @@ function App() {
       )}
       {selectedPayment && (
         <PaymentDetailsDrawer
+          awaiting={attempts.awaitingFor(selectedPayment.id)}
           busyAction={busyAction}
           error={drawerError}
           events={workspace.webhooks}
           intent={selectedPayment}
-          onAction={handlePaymentAction}
+          onAction={async (action) => {
+            await handlePaymentAction(action);
+          }}
           onClose={() => {
             setSelectedPayment(null);
             setDrawerError("");
           }}
           onRefund={handleRefund}
+          onReloadRefundHistory={refundHistory.reload}
+          onRetryAwaiting={handleRetryAwaiting}
           reconciliations={workspace.reconciliations}
+          refundHistory={refundHistory.state}
           user={user}
         />
       )}
