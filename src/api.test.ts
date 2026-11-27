@@ -251,3 +251,58 @@ describe('API request handling', () => {
     })
   })
 })
+
+describe('refund history', () => {
+  const history = {
+    paymentIntentId: intent.id,
+    currency: 'USD',
+    capturedAmountMinor: 12500,
+    refundedAmountMinor: 2500,
+    remainingRefundableMinor: 10000,
+    refunds: [
+      {
+        id: 'refund-1',
+        paymentIntentId: intent.id,
+        actorId: 'user-operator-01',
+        actorName: 'Morgan Patel',
+        reason: 'Customer request',
+        currency: 'USD',
+        amountMinor: 2500,
+        remainingAfterMinor: 10000,
+        createdAt: '2026-10-30T12:20:00Z',
+      },
+      {
+        id: 'refund-0',
+        paymentIntentId: intent.id,
+        actorId: null,
+        actorName: null,
+        reason: 'Earlier synthetic refund',
+        currency: 'USD',
+        amountMinor: 1,
+        remainingAfterMinor: null,
+        createdAt: '2026-10-30T12:10:00Z',
+      },
+    ],
+  }
+
+  it('reads the refund history of one encoded intent and keeps legacy null fields', async () => {
+    mockedFetch().mockResolvedValueOnce(jsonResponse(history))
+
+    const result = await api.refundHistory('intent/a b')
+
+    expect(String(mockedFetch().mock.calls[0]?.[0])).toBe('/api/v1/payment-intents/intent%2Fa%20b/refunds')
+    expect(mockedFetch().mock.calls[0]?.[1]?.method).toBeUndefined()
+    expect(result.remainingRefundableMinor).toBe(10000)
+    expect(result.refunds[0]?.actorName).toBe('Morgan Patel')
+    expect(result.refunds[1]?.actorId).toBeNull()
+    expect(result.refunds[1]?.remainingAfterMinor).toBeNull()
+  })
+
+  it('rejects a reply that does not match the refund history contract', async () => {
+    mockedFetch().mockResolvedValueOnce(jsonResponse({ ...history, refunds: [{ id: 'refund-1' }] }))
+
+    const cause = await api.refundHistory(intent.id).catch((error: unknown) => error)
+
+    expect(cause).toMatchObject({ status: 502, code: 'INVALID_RESPONSE' })
+  })
+})

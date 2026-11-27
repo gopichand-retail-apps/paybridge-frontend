@@ -10,19 +10,29 @@ afterEach(cleanup)
 
 type DrawerProps = Parameters<typeof PaymentDetailsDrawer>[0]
 
-function renderDrawer(overrides: Partial<DrawerProps> = {}) {
-  const props: DrawerProps = {
+const readyHistory: DrawerProps['refundHistory'] = { status: 'loading' }
+
+function drawerProps(overrides: Partial<DrawerProps> = {}): DrawerProps {
+  return {
     intent: paymentIntent(),
     user: merchantUser,
     events: [],
     reconciliations: [],
     busyAction: null,
     error: '',
+    awaiting: null,
+    refundHistory: readyHistory,
     onClose: vi.fn(),
     onAction: vi.fn().mockResolvedValue(undefined),
     onRefund: vi.fn().mockResolvedValue(undefined),
+    onRetryAwaiting: vi.fn().mockResolvedValue(undefined),
+    onReloadRefundHistory: vi.fn(),
     ...overrides,
   }
+}
+
+function renderDrawer(overrides: Partial<DrawerProps> = {}) {
+  const props = drawerProps(overrides)
   const view = renderWithContent(<PaymentDetailsDrawer {...props} />)
   return { ...view, props }
 }
@@ -60,17 +70,7 @@ describe('payment details drawer', () => {
     expect(screen.queryByRole('button', { name: 'Void' })).not.toBeInTheDocument()
 
     rerender(
-      <PaymentDetailsDrawer
-        intent={authorized}
-        user={operatorUser}
-        events={[]}
-        reconciliations={[]}
-        busyAction={null}
-        error=""
-        onClose={vi.fn()}
-        onAction={onAction}
-        onRefund={vi.fn().mockResolvedValue(undefined)}
-      />,
+      <PaymentDetailsDrawer {...drawerProps({ intent: authorized, user: operatorUser, onAction })} />,
     )
     expect(screen.getByRole('button', { name: 'Void' })).toBeVisible()
     expect(screen.queryByRole('button', { name: 'Run reconciliation' })).not.toBeInTheDocument()
@@ -143,9 +143,81 @@ describe('payment details drawer', () => {
     await user.type(reason, 'Customer request')
     await user.click(screen.getByRole('button', { name: 'Record refund' }))
     await waitFor(() => expect(onRefund).toHaveBeenCalledTimes(1))
-    expect(onRefund.mock.calls[0]?.[0]).toBe(2000)
-    expect(onRefund.mock.calls[0]?.[1]).toBe('Customer request')
-    expect(onRefund.mock.calls[0]?.[2]).toBeTruthy()
+    expect(onRefund).toHaveBeenCalledWith(2000, 'Customer request')
+  })
+
+  it('shows the refund history of a captured payment and nothing for one that was never captured', () => {
+    const captured = paymentIntent({
+      id: 'intent-demo-captured',
+      status: 'PARTIALLY_REFUNDED',
+      capturedAmountMinor: 12500,
+      refundedAmountMinor: 2500,
+      capturedAt: '2026-10-30T12:05:00Z',
+    })
+    const { rerender } = renderDrawer({
+      intent: captured,
+      refundHistory: {
+        status: 'ready',
+        history: {
+          paymentIntentId: captured.id,
+          currency: 'USD',
+          capturedAmountMinor: 12500,
+          refundedAmountMinor: 2500,
+          remainingRefundableMinor: 10000,
+          refunds: [{
+            id: 'refund-0001',
+            paymentIntentId: captured.id,
+            actorId: 'user-operator-01',
+            actorName: 'Morgan Patel',
+            reason: 'Customer request',
+            currency: 'USD',
+            amountMinor: 2500,
+            remainingAfterMinor: 10000,
+            createdAt: '2026-10-30T12:20:00Z',
+          }],
+        },
+      },
+    })
+
+    expect(screen.getByRole('heading', { name: 'Refund history' })).toBeVisible()
+    expect(screen.getByText('Remaining refundable: $100.00')).toBeVisible()
+    expect(screen.getByText('Recorded by Morgan Patel')).toBeVisible()
+
+    rerender(
+      <PaymentDetailsDrawer {...drawerProps({ intent: paymentIntent() })} />,
+    )
+    expect(screen.queryByRole('heading', { name: 'Refund history' })).not.toBeInTheDocument()
+  })
+
+  it('shows what is awaiting confirmation, retries it on request and blocks a second refund meanwhile', async () => {
+    const user = userEvent.setup()
+    const onRetryAwaiting = vi.fn().mockResolvedValue(undefined)
+    const captured = paymentIntent({
+      id: 'intent-demo-captured',
+      status: 'CAPTURED',
+      capturedAmountMinor: 12500,
+      capturedAt: '2026-10-30T12:05:00Z',
+    })
+    renderDrawer({
+      intent: captured,
+      user: operatorUser,
+      awaiting: { paymentId: captured.id, action: 'refund', amountMinor: 2000, reason: 'Customer request' },
+      onRetryAwaiting,
+    })
+
+    expect(screen.getByText('Awaiting confirmation')).toBeVisible()
+    expect(screen.getByLabelText(/Refund amount/)).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Record refund' })).toBeDisabled()
+    await user.click(screen.getByRole('button', { name: 'Retry safely' }))
+    expect(onRetryAwaiting).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps ordinary actions available while a different action awaits confirmation', () => {
+    const authorized = paymentIntent({ status: 'AUTHORIZED', authorizedAt: '2026-10-30T12:01:00Z' })
+    renderDrawer({ intent: authorized, awaiting: { paymentId: authorized.id, action: 'capture' } })
+
+    expect(screen.getByText('Awaiting confirmation')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Capture' })).toBeEnabled()
   })
 
   it('shows safely mapped refund failures and hides refund controls for read-only or settled records', async () => {
@@ -176,17 +248,7 @@ describe('payment details drawer', () => {
       capturedAt: '2026-10-30T12:05:00Z',
     })
     rerender(
-      <PaymentDetailsDrawer
-        intent={refundable}
-        user={operatorUser}
-        events={[]}
-        reconciliations={[]}
-        busyAction={null}
-        error=""
-        onClose={vi.fn()}
-        onAction={vi.fn().mockResolvedValue(undefined)}
-        onRefund={onRefund}
-      />,
+      <PaymentDetailsDrawer {...drawerProps({ intent: refundable, user: operatorUser, onRefund })} />,
     )
     await user.type(screen.getByLabelText(/Refund amount \(up to \$125\.00\)/), '1.00')
     await user.click(screen.getByRole('button', { name: 'Record refund' }))
@@ -219,17 +281,7 @@ describe('payment details drawer', () => {
     expect(onClose).not.toHaveBeenCalled()
 
     rerender(
-      <PaymentDetailsDrawer
-        intent={captured}
-        user={merchantUser}
-        events={[]}
-        reconciliations={[]}
-        busyAction={null}
-        error=""
-        onClose={onClose}
-        onAction={vi.fn().mockResolvedValue(undefined)}
-        onRefund={vi.fn().mockResolvedValue(undefined)}
-      />,
+      <PaymentDetailsDrawer {...drawerProps({ intent: captured, onClose })} />,
     )
     await user.keyboard('{Escape}')
     expect(onClose).toHaveBeenCalledTimes(1)

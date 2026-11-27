@@ -40,6 +40,25 @@ const paymentIntentSchema = z.object({
   authorizedAt: z.string().nullable(),
   capturedAt: z.string().nullable(),
 })
+const refundSchema = z.object({
+  id: z.string(),
+  paymentIntentId: z.string(),
+  actorId: z.string().nullable(),
+  actorName: z.string().nullable(),
+  reason: z.string(),
+  currency: z.literal('USD'),
+  amountMinor: z.number().int(),
+  remainingAfterMinor: z.number().int().nullable(),
+  createdAt: z.string(),
+})
+const refundHistorySchema = z.object({
+  paymentIntentId: z.string(),
+  currency: z.literal('USD'),
+  capturedAmountMinor: z.number().int(),
+  refundedAmountMinor: z.number().int(),
+  remainingRefundableMinor: z.number().int(),
+  refunds: z.array(refundSchema),
+})
 const overviewSchema = z.object({
   totalIntentCount: z.number().int(),
   capturedAmountMinor: z.number().int(),
@@ -87,6 +106,7 @@ const responseSchemas = {
   user: z.object({ user: userSchema, localProfileSession: z.boolean() }),
   payments: z.object({ paymentIntents: z.array(paymentIntentSchema) }),
   payment: z.object({ paymentIntent: paymentIntentSchema, duplicate: z.boolean() }),
+  refundHistory: refundHistorySchema,
   overview: overviewSchema,
   webhooks: z.object({ webhookEvents: z.array(webhookEventSchema) }),
   deliveries: z.object({ deliveries: z.array(z.object({
@@ -107,6 +127,8 @@ export type SessionUser = z.infer<typeof userSchema>
 export type PaymentStatus = z.infer<typeof paymentStatusSchema>
 export type SimulationOutcome = z.infer<typeof outcomeSchema>
 export type PaymentIntent = z.infer<typeof paymentIntentSchema>
+export type Refund = z.infer<typeof refundSchema>
+export type RefundHistory = z.infer<typeof refundHistorySchema>
 export type Overview = z.infer<typeof overviewSchema>
 export type WebhookEvent = z.infer<typeof webhookEventSchema>
 export type Reconciliation = z.infer<typeof reconciliationSchema>
@@ -228,6 +250,10 @@ export const api = {
   payment: (id: string) => request(
     `${API_PREFIX}/payment-intents/${encodeURIComponent(id)}`,
     responseSchemas.payment,
+  ),
+  refundHistory: (id: string) => request(
+    `${API_PREFIX}/payment-intents/${encodeURIComponent(id)}/refunds`,
+    responseSchemas.refundHistory,
   ),
   createIntent: (body: CreateIntentRequest, idempotencyKey: string) => request(
     `${API_PREFIX}/payment-intents`,

@@ -17,8 +17,12 @@ import type {
 } from '../api'
 import { formatDate, formatMoney, formatReference, parseMoneyToMinor } from '../domain/money'
 import { useDialogFocus } from '../hooks/useDialogFocus'
+import type { AwaitingIntent } from '../hooks/useIntentAttempts'
+import type { RefundHistoryState } from '../hooks/useRefundHistory'
 import { useContent } from '../content-context'
 import { dataString, dataStringFrom, dataStringOr, errorMessage } from '../content-schema'
+import { AwaitingConfirmation } from './AwaitingConfirmation'
+import { RefundHistoryList } from './RefundHistoryList'
 import { StatusBadge } from './StatusBadge'
 
 export type PaymentAction = 'authorize' | 'capture' | 'void' | 'deliver' | 'reconcile'
@@ -30,9 +34,16 @@ interface PaymentDetailsDrawerProps {
   reconciliations: Reconciliation[]
   busyAction: PaymentAction | 'refund' | null
   error: string
+  /** A write on this payment whose outcome is still unconfirmed, if any. */
+  awaiting: AwaitingIntent | null
+  refundHistory: RefundHistoryState
   onClose: () => void
   onAction: (action: PaymentAction) => Promise<void>
-  onRefund: (amountMinor: number, reason: string, idempotencyKey: string) => Promise<void>
+  /** Resolves true once the server confirmed the refund; false while its outcome is still unknown. */
+  onRefund: (amountMinor: number, reason: string) => Promise<boolean>
+  /** Retries the awaiting write on its original key. Resolves true once the server confirmed it. */
+  onRetryAwaiting: () => Promise<boolean>
+  onReloadRefundHistory: () => void
 }
 
 export function PaymentDetailsDrawer({
@@ -42,21 +53,25 @@ export function PaymentDetailsDrawer({
   reconciliations,
   busyAction,
   error,
+  awaiting,
+  refundHistory,
   onClose,
   onAction,
   onRefund,
+  onRetryAwaiting,
+  onReloadRefundHistory,
 }: PaymentDetailsDrawerProps) {
   const { model, t } = useContent()
   const currencySymbol = dataString(model, 'currency.symbol')
   const [refundAmount, setRefundAmount] = useState('')
   const [refundReason, setRefundReason] = useState(dataString(model, 'defaultRefundReason'))
-  const [refundKey, setRefundKey] = useState(() => crypto.randomUUID())
   const [refundError, setRefundError] = useState('')
   const dialogRef = useDialogFocus<HTMLElement>()
   const isOperator = user.role === 'OPERATOR'
   const canMutate = user.role !== 'AUDITOR'
   const isCaptured = intent.capturedAmountMinor > 0
   const remainingRefundMinor = intent.capturedAmountMinor - intent.refundedAmountMinor
+  const refundAwaiting = awaiting?.action === 'refund'
   const paymentEvents = events.filter((event) => event.paymentIntentId === intent.id)
   const paymentReconciliations = reconciliations.filter((row) => row.paymentIntentId === intent.id)
 
@@ -76,12 +91,14 @@ export function PaymentDetailsDrawer({
 
     setRefundError('')
     try {
-      await onRefund(amountMinor, refundReason.trim(), refundKey)
-      setRefundAmount('')
-      setRefundKey(crypto.randomUUID())
+      if (await onRefund(amountMinor, refundReason.trim())) setRefundAmount('')
     } catch (cause) {
       setRefundError(errorMessage(model, t, cause))
     }
+  }
+
+  async function retryAwaiting() {
+    if (await onRetryAwaiting() && awaiting?.action === 'refund') setRefundAmount('')
   }
 
   return (
@@ -162,6 +179,13 @@ export function PaymentDetailsDrawer({
               <h3>{t('details.actions')}</h3>
               <span className="role-note">{t(`role.${user.role}`).toLowerCase()}</span>
             </div>
+            {awaiting && (
+              <AwaitingConfirmation
+                awaiting={awaiting}
+                busy={busyAction === awaiting.action}
+                onRetry={retryAwaiting}
+              />
+            )}
             {intent.status === 'CREATED' && canMutate && (
               <ActionButton
                 busy={busyAction === 'authorize'}
@@ -220,11 +244,9 @@ export function PaymentDetailsDrawer({
                   <span className="amount-input-wrap">
                     <span aria-hidden="true">{currencySymbol}</span>
                     <input
+                      disabled={refundAwaiting}
                       inputMode="decimal"
-                      onChange={(event) => {
-                        setRefundAmount(event.target.value)
-                        setRefundKey(crypto.randomUUID())
-                      }}
+                      onChange={(event) => setRefundAmount(event.target.value)}
                       placeholder={t('details.refundPlaceholder')}
                       value={refundAmount}
                     />
@@ -233,16 +255,18 @@ export function PaymentDetailsDrawer({
                 <label>
                   <span>{t('details.refundReason')}</span>
                   <input
+                    disabled={refundAwaiting}
                     maxLength={160}
-                    onChange={(event) => {
-                      setRefundReason(event.target.value)
-                      setRefundKey(crypto.randomUUID())
-                    }}
+                    onChange={(event) => setRefundReason(event.target.value)}
                     value={refundReason}
                   />
                 </label>
                 {(refundError || error) && <p className="form-error" role="alert">{refundError || error}</p>}
-                <button className="secondary-button refund-submit" disabled={busyAction !== null} type="submit">
+                <button
+                  className="secondary-button refund-submit"
+                  disabled={busyAction !== null || refundAwaiting}
+                  type="submit"
+                >
                   {busyAction === 'refund'
                     ? <><LoaderCircle className="spin" aria-hidden="true" size={16} /> {t('details.recording')}</>
                       : <><CircleDollarSign aria-hidden="true" size={16} /> {t('details.recordRefund')}</>}
@@ -258,6 +282,14 @@ export function PaymentDetailsDrawer({
               <p className="working-note"><LoaderCircle className="spin" aria-hidden="true" size={15} /> {t('details.working')}</p>
             )}
           </section>
+
+          {isCaptured && (
+            <RefundHistoryList
+              onRetry={onReloadRefundHistory}
+              remainingRefundableMinor={remainingRefundMinor}
+              state={refundHistory}
+            />
+          )}
 
           <section className="drawer-section detail-list">
             <h3>{t('details.intentDetails')}</h3>
